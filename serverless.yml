@@ -1,0 +1,141 @@
+service: saga-pattern-serverless
+
+plugins:
+  - serverless-plugin-typescript
+  - serverless-step-functions
+
+custom:
+  stages:
+    - devel
+    - local
+
+provider:
+  profile: personal
+  name: aws
+  runtime: nodejs12.x
+  region: us-east-1
+  lambdaHashingVersion: 20201221
+  stage: ${opt:stage, 'devel'}
+  environment:
+    STAGE: ${self:provider.stage}
+    SAGA_COORDINATOR_ARN: !Sub 'arn:aws:states:${self:provider.region}:${AWS::AccountId}:stateMachine:${self:provider.stage}-BookPackageToursStateMachine'
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - "states:StartExecution"
+          Resource: !Sub 'arn:aws:states:${self:provider.region}:${AWS::AccountId}:stateMachine:${self:provider.stage}-BookPackageToursStateMachine'
+
+stepFunctions:
+  stateMachines:
+    BookPackageToursStateMachine:
+      name: ${self:provider.stage}-BookPackageToursStateMachine
+      definition:
+        StartAt: BookFlightStep
+        States:
+          BookFlightStep:
+            Type: Task
+            Resource:
+              Fn::GetAtt: [BookFlightHandler, Arn]
+            Next: BookFlightStepChoiceState
+          BookFlightStepCompensation:
+            Type: Task
+            Resource:
+              Fn::GetAtt: [BookFlightCompensationHandler, Arn]
+            Next: SagaFailState
+          BookFlightStepChoiceState:
+            Type: Choice
+            Choices:
+              - Variable: "$.success"
+                BooleanEquals: true
+                Next: BookHotelStep
+              - Variable: "$.success"
+                BooleanEquals: false
+                Next: SagaFailState
+          BookHotelStep:
+            Type: Task
+            Resource:
+              Fn::GetAtt: [BookHotelHandler, Arn]
+            Next: BookHotelStepChoiceState
+          BookHotelStepCompensation:
+            Type: Task
+            Resource:
+              Fn::GetAtt: [BookHotelCompensationHandler, Arn]
+            Next: BookFlightStepCompensation
+          BookHotelStepChoiceState:
+            Type: Choice
+            Choices:
+              - Variable: "$.success"
+                BooleanEquals: true
+                Next: BookCarStep
+              - Variable: "$.success"
+                BooleanEquals: false
+                Next: BookFlightStepCompensation
+          BookCarStep:
+            Type: Task
+            Resource:
+              Fn::GetAtt: [BookCarHandler, Arn]
+            Next: BookCarStepChoiceState
+          BookCarStepChoiceState:
+            Type: Choice
+            Choices:
+              - Variable: "$.success"
+                BooleanEquals: true
+                Next: SagaSuccessState
+              - Variable: "$.success"
+                BooleanEquals: false
+                Next: BookHotelStepCompensation
+          SagaFailState:
+            Type: Task
+            Resource:
+              Fn::GetAtt: [SagaFailHandler, Arn]
+            End: true
+          SagaSuccessState:
+            Type: Task
+            Resource:
+              Fn::GetAtt: [SagaSuccessHandler, Arn]
+            End: true
+
+
+
+functions:
+  # Book Package Tours (API)
+  BookPackageTours:
+    handler: src/api/BookPackageTours.handler
+    events:
+      - http:
+          path: /package
+          method: POST
+
+  # Book Flight Transaction
+  BookFlightHandler:
+    handler: src/services/flight-service/BookFlightHandler.handler
+  # Book Flight Transaction Compensation
+  BookFlightCompensationHandler:
+    handler: src/services/flight-service/RevertBookFlightHandler.handler
+  
+  # Book Hotel Transaction
+  BookHotelCompensationHandler:
+    handler: src/services/hotel-service/RevertBookHotelHandler.handler
+  # Book Hotel Transaction Compensation
+  BookHotelHandler:
+    handler: src/services/hotel-service/BookHotelHandler.handler
+  
+  # Book Car Transaction
+  BookCarHandler:
+    handler: src/services/car-service/BookCarHandler.handler
+  # Book Car Transaction Compensation
+  BookCarCompensationHandler:
+    handler: src/services/car-service/RevertBookCarHandler.handler
+
+  # Fail State Handler
+  SagaFailHandler:
+    handler: src/saga/SagaFailHandler.handler
+  # Success State Handler
+  SagaSuccessHandler:
+    handler: src/saga/SagaSuccessHandler.handler
+
+
+
+
